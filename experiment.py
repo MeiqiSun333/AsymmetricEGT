@@ -3,7 +3,7 @@ import os
 import json
 
 # Experiment1: All network structures lead to inequality.
-def run_experiment(network_type, num_steps, params, repetitions=5):
+def run_experiment1(network_type, num_steps, params, repetitions=5):
     results = []
     for _ in range(repetitions):
         config = DefaultConfig()
@@ -36,7 +36,7 @@ def main():
 
     for network_type in network_types:
         for params in parameter_variations[network_type]:
-            results = run_experiment(network_type, num_steps, params)
+            results = run_experiment1(network_type, num_steps, params)
             file_name = f"{network_type}_params_{params}.json"
             file_path = os.path.join(results_dir, file_name)
             with open(file_path, 'w') as f:
