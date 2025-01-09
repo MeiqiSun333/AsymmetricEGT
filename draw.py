@@ -51,23 +51,23 @@ def plot_gini_over_time(data, results_dir):
     plt.show()
 
 
-def perform_statistical_test(data):
-    results = {}
+def perform_statistical_test(data, last_n_steps=10):
     inequality_threshold = 0.4
+    results = {}
+    for network_type in data['network_type'].unique():
+        subset = data[data['network_type'] == network_type]
 
-    network_types = data['network_type'].unique()
-    for network_type in network_types:
-        subset = data[data['network_type'] == network_type]['Gini']
-
-        t_stat, p_value = ttest_1samp(subset, inequality_threshold)
-
+        last_steps_data = subset[subset['Step'] >= subset['Step'].max() - last_n_steps + 1]
+        mean_gini_last_steps = last_steps_data.groupby(['network_type', 'params']).mean()['Gini']
+        t_stat, p_value = ttest_1samp(mean_gini_last_steps, inequality_threshold)
+        mean_gini = mean_gini_last_steps.mean()
+        significant = p_value < 0.05 and mean_gini > inequality_threshold
         results[network_type] = {
             'T-statistic': t_stat,
             'P-value': p_value,
-            'Mean Gini': subset.mean(),
-            'Significantly Higher than Threshold': p_value < 0.05 and subset.mean() > inequality_threshold
+            'Mean Gini': mean_gini,
+            'Significantly Higher than Threshold': significant
         }
-
     return results
 
 
