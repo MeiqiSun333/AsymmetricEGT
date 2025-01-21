@@ -1,22 +1,30 @@
-from main import *
+from main2 import *
 import os
 import json
+import time
 
-# Experiment1: All network structures lead to inequality.
-def run_experiment(network_type, num_steps, params, repetitions=5, allow_rewiring=False):
+def run_experiment(network_type, num_steps, avg_degree, rewiring_prob=0, repetitions=10):
     results = []
     for _ in range(repetitions):
         config = DefaultConfig()
-        config.network_type = network_type
-        config.num_agents = 30
-        config.rewiring_prob = 0 if not allow_rewiring else config.rewiring_prob
-        config.update_parameters(params)
+        config.num_agents = 300
+        if network_type == 'watts-strogatz':
+            config.network_type = 'watts-strogatz'
+            config.k = avg_degree
+            config.p = rewiring_prob
+        elif network_type == 'scale-free':
+            config.network_type = 'scale-free'
+            config.m = avg_degree // 2
+        elif network_type == 'regular':
+            config.network_type = 'regular'
+            config.d = avg_degree
+
         model = NetworkModel(config)
         all_steps_data = []
         for step in range(num_steps):
             model.step()
             step_data = {
-                'Step': model.steps,
+                'Step': step,
                 'Gini': model.compute_gini([agent.wealth for agent in model.schedule.agents])
             }
             all_steps_data.append(step_data)
@@ -24,25 +32,26 @@ def run_experiment(network_type, num_steps, params, repetitions=5, allow_rewirin
     return results
 
 def main():
+    start_time = time.time()
     network_types = ['watts-strogatz', 'scale-free', 'regular']
-    num_steps = 80
-    parameter_variations = {
-        'watts-strogatz': [{'k': k, 'p': p} for k in range(4, 10, 2) for p in [0.1, 0.3, 0.5]],
-        'scale-free': [{'m': m} for m in range(3, 6)],
-        'regular': [{'d': d} for d in range(3, 7)]
-    }
+    num_steps = 480
+    avg_degrees = [6, 8, 10]
 
     results_dir = "experiment1"
     os.makedirs(results_dir, exist_ok=True)
 
-    for network_type in network_types:
-        for params in parameter_variations[network_type]:
-            results = run_experiment(network_type, num_steps, params)
-            file_name = f"{network_type}_params_{params}.json"
+    for avg_degree in avg_degrees:
+        for network_type in network_types:
+            results = run_experiment(network_type, num_steps, avg_degree)
+            file_name = f"{network_type}_avg_degree_{avg_degree}.json"
             file_path = os.path.join(results_dir, file_name)
             with open(file_path, 'w') as f:
                 json.dump(results, f, indent=4)
-            print(f"Results for {network_type} with params {params} saved to {file_name}")
+            print(f"Results for {network_type} with average degree {avg_degree} saved to {file_name}")
+
+    end_time = time.time()
+    print("Total time taken:", end_time - start_time)
 
 if __name__ == '__main__':
     main()
+

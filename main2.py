@@ -20,7 +20,7 @@ class Player(Agent):
         self.ration = np.random.lognormal(mean=config.ration_distribution[0], sigma=config.ration_distribution[1])
         self.V_with_belief = 0
         self.U_with_belief = 0
-        self.history = np.zeros(5)
+        self.history = np.zeros(5, dtype=float)
         self.has_played = False
 
         # parameters for belief
@@ -37,121 +37,119 @@ class Player(Agent):
         self.epsilon = config.epsilon
 
     def choose_neighbor(self):
-        candidates = [
-            self.model.G.nodes[n]["agent"]
-            for n in self.model.G.neighbors(self.pos)
-            if "agent" in self.model.G.nodes[n]
-               and not self.model.G.nodes[n]["agent"].has_played
-        ]
-        return self.random.choice(candidates) if candidates else None
+        neighbors = list(self.model.G.neighbors(self.pos))
+        candidates = []
+        for node_id in neighbors:
+            ag = self.model.G.nodes[node_id].get("agent", None)
+            if ag is not None and (not ag.has_played):
+                candidates.append(ag)
+        if candidates:
+            return random.choice(candidates)
+        else:
+            return None
 
     def add_belief(self, other):
-        z_alpha_v = self.alpha_epsilon * (self.V - other.V)
-        p_epsilon_v = np.tanh(z_alpha_v)
-        z_alpha_u = self.alpha_epsilon * (self.U - other.U)
-        p_epsilon_u = np.tanh(z_alpha_u)
+        dv = self.alpha_epsilon * (self.V - other.V)
+        p_epsilon_v = np.tanh(dv)
         self.V_with_belief = self.V - p_epsilon_v * self.V
+
+        du = self.alpha_epsilon * (self.U - other.U)
+        p_epsilon_u = np.tanh(du)
         self.U_with_belief = self.U - p_epsilon_u * self.U
 
     @staticmethod
     def indicator_function(x, A):
         return 1 if x > A else 0
 
-    def compute_probabilities(self, own_payoff_c, own_payoff_d, ration):
-        exp_c = np.exp(ration * own_payoff_c)
-        exp_d = np.exp(ration * own_payoff_d)
-        total = exp_c + exp_d
-        return exp_c / total, exp_d / total
+    def choose_strategy(self, other, p_c1 = 0.5, p_c2 = 0.5, max_iter=50, tol=1e-5):
 
-    def choose_strategy(self, other):
-        p1_C_if_C, p1_D_if_C = self.compute_probabilities(1, self.V_with_belief, self.ration)
-        p1_C_if_D, p1_D_if_D = self.compute_probabilities(self.U_with_belief, 0, self.ration)
+        def safe_exp(x, clip=40.0):
+            if x > clip:
+                return np.exp(clip)
+            elif x < -clip:
+                return np.exp(-clip)
+            else:
+                return np.exp(x)
 
-        p2_C_if_C, p2_D_if_C = other.compute_probabilities(1, other.V_with_belief, other.ration)
-        p2_C_if_D, p2_D_if_D = other.compute_probabilities(other.U_with_belief, 0, other.ration)
 
-        joint_CC = p1_C_if_C * p2_C_if_C
-        joint_CD = p1_C_if_D * p2_D_if_C
-        joint_DC = p1_D_if_C * p2_C_if_D
-        joint_DD = p1_D_if_D * p2_D_if_D
+        for _ in range(max_iter):
+            old_p_c1 = p_c1
+            old_p_c2 = p_c2
 
-        strategies = ['CC', 'CD', 'DC', 'DD']
-        probabilities = [joint_CC, joint_CD, joint_DC, joint_DD]
-        probabilities = np.array(probabilities) / np.sum(probabilities)
-        chosen_combination = np.random.choice(strategies, p=probabilities)
+            ec = safe_exp(self.ration * (old_p_c2 + (1 - old_p_c2) * self.U_with_belief))
+            ed = safe_exp(self.ration * (old_p_c2 * self.V_with_belief))
+            new_p_c1 = ec / (ec + ed)
 
-        my_payoff_matrix = np.array([[1, self.U_with_belief], [self.V_with_belief, 0]])
-        other_payoff_matrix = np.array([[1, other.U_with_belief], [other.V_with_belief, 0]])
-        if chosen_combination == 'CC':
-            my_payoff = my_payoff_matrix[0, 0]
-            other_payoff = other_payoff_matrix[0, 0]
-        elif chosen_combination == 'CD':
-            my_payoff = my_payoff_matrix[0, 1]
-            other_payoff = other_payoff_matrix[0, 1]
-        elif chosen_combination == 'DC':
-            my_payoff = my_payoff_matrix[1, 0]
-            other_payoff = other_payoff_matrix[1, 0]
-        else:
-            my_payoff = my_payoff_matrix[1, 1]
-            other_payoff = other_payoff_matrix[1, 1]
+            ec2 = safe_exp(other.ration * (p_c1 + (1 - p_c1) * other.V_with_belief))
+            ed2 = safe_exp(other.ration * (p_c1 * other.U_with_belief))
+            new_p_c2 = ec2 / (ec2 + ed2)
 
-        return chosen_combination, my_payoff, other_payoff
+            delta = abs(old_p_c1 - new_p_c1) + abs(old_p_c2 - new_p_c2)
+            p_c1, p_c2 = new_p_c1, new_p_c2
+            if delta < tol:
+                break
+
+        E1 = p_c1 * p_c2 + p_c1 * (1 - p_c2) * self.U_with_belief + (1 - p_c1) * p_c2 * self.V_with_belief
+        E2 = p_c1 * p_c2 + p_c1 * (1 - p_c2) * other.V_with_belief + (1 - p_c1) * p_c2 * other.U_with_belief
+
+        return E1, E2
+
 
     def update_wealth(self, payoff):
-        self.history = np.roll(self.history, -1)
+        np.roll(self.history, -1)
         self.history[-1] = payoff
-        self.wealth = self.wealth * (1 + self.model.discount) + payoff
-        if len(self.history) < 5:
-            self.recent_wealth = np.dot(self.history, (1 + self.model.discount) ** np.arange(len(self.history))[::-1])
-        else:
-            self.recent_wealth = np.dot(self.history, (1 + self.model.discount) ** np.arange(5)[::-1])
+        self.wealth = self.wealth * (1.0 + self.model.discount) + payoff
+
+        discount_factors = (1.0 + self.model.discount) ** np.arange(5)[::-1]
+        self.recent_wealth = np.dot(self.history, discount_factors)
 
     def update_payoff_mx(self, other):
         z_uv = self.eta * (other.recent_wealth - self.recent_wealth)
         p_uv = np.tanh(z_uv)
         if random.random() < p_uv:
             indicator = Player.indicator_function(other.wealth, self.wealth)
-            self.V += self.alpha_uv * (other.V - self.V) / (1 + np.exp(-self.beta_uv * indicator * (other.wealth - self.wealth)))
-            self.U += self.alpha_uv * (other.U - self.U) / (1 + np.exp(-self.beta_uv * indicator * (other.wealth - self.wealth)))
+            diff_wealth = (other.wealth - self.wealth)
+            denom = (1.0 + np.exp(-self.beta_uv * indicator * diff_wealth))
+            dV = self.alpha_uv * (other.V - self.V) / denom
+            dU = self.alpha_uv * (other.U - self.U) / denom
+            self.V += dV
+            self.U += dU
             return self.V, self.U
 
     def rewire_connection(self, other):
         if random.random() < self.rewiring_prob:
+            # remove edge
             self.model.G.remove_edge(self.pos, other.pos)
+            # gather possible neighbors
             possible_neighbors = set(self.model.G.neighbors(other.pos)) - {self.pos}
-
+            done = False
             if possible_neighbors:
                 for new_neighbor_pos in possible_neighbors:
-                    new_neighbor = self.model.G.nodes[new_neighbor_pos]["agent"]
-                    temp_value = self.beta_con * max(abs(self.wealth - new_neighbor.wealth), self.epsilon)
-                    p_con = 0
-                    if temp_value < 1:
-                        p_con = 1 / (1 + (1 - temp_value) ** (-self.alpha_con))
-
+                    new_agent = self.model.G.nodes[new_neighbor_pos]["agent"]
+                    temp_value = self.beta_con * max(abs(self.wealth - new_agent.wealth), self.epsilon)
+                    p_con = 0.0
+                    if temp_value < 1.0:
+                        p_con = 1.0 / (1.0 + (1.0 - temp_value) ** (-self.alpha_con))
                     if random.random() < p_con:
                         self.model.G.add_edge(self.pos, new_neighbor_pos)
+                        done = True
                         break
-                else:
-                    # All possible second neighbors were not connected successfully, randomly selected another node
-                    all_nodes = set(self.model.G.nodes) - {self.pos}
-                    if all_nodes:
-                        random_neighbor = random.choice(list(all_nodes))
-                        self.model.G.add_edge(self.pos, random_neighbor)
-            else:
-                # No possible second neighbors, randomly selected another node
-                all_nodes = set(self.model.G.nodes) - {self.pos}
+
+            if not done:
+                # if not possible or no success => random
+                all_nodes = list(self.model.all_node_ids_minus_self[self.pos])
                 if all_nodes:
-                    random_neighbor = random.choice(list(all_nodes))
-                    self.model.G.add_edge(self.pos, random_neighbor)
+                    rand_node = random.choice(all_nodes)
+                    self.model.G.add_edge(self.pos, rand_node)
 
     def reset(self):
-            self.has_played = False
+        self.has_played = False
 
     def step(self):
         other = self.choose_neighbor()
         if other:
             self.add_belief(other)
-            chosen_strategy, my_payoff, other_payoff = Player.choose_strategy(self, other)
+            my_payoff, other_payoff = self.choose_strategy(other)
             self.update_wealth(my_payoff)
             other.update_wealth(other_payoff)
             self.update_payoff_mx(other)
@@ -159,7 +157,6 @@ class Player(Agent):
             other.has_played = True
             self.rewire_connection(other)
             self.reset()
-
 
 class NetworkModel(Model):
     def __init__(self, config):
@@ -169,6 +166,14 @@ class NetworkModel(Model):
         self.schedule = RandomActivation(self)
         self.G = self.create_network()
         self.steps = 0
+
+        self.all_node_ids_minus_self = {}
+        all_nodes_list = list(self.G.nodes())
+        for node_id in all_nodes_list:
+            tmp = all_nodes_list.copy()
+            tmp.remove(node_id)
+            self.all_node_ids_minus_self[node_id] = tmp
+
         self.datacollector = DataCollector(
             model_reporters={
                 "Gini": lambda m: NetworkModel.compute_gini([a.wealth for a in m.schedule.agents]),
@@ -189,15 +194,16 @@ class NetworkModel(Model):
 
         for i, node in enumerate(self.G.nodes()):
             agent = Player(i, self, node, config)
+            agent.model = self
             self.schedule.add(agent)
             self.G.nodes[node]["agent"] = agent
 
     @staticmethod
     def compute_gini(wealths):
-        wealths = np.array(wealths)
+        wealths = np.array(wealths, dtype=float)
         n = len(wealths)
         if n == 0 or np.sum(wealths) == 0:
-            return 0
+            return 0.0
         sorted_wealths = np.sort(wealths)
         index = np.arange(1, n + 1)
         gini = (2 * np.sum(index * sorted_wealths) / (n * np.sum(sorted_wealths))) - (n + 1) / n
@@ -208,11 +214,9 @@ class NetworkModel(Model):
         if nx.is_connected(G):
             return nx.average_shortest_path_length(G)
         else:
-            # Calculate the avg path length of the largest connected subgraph
             largest_cc = max(nx.connected_components(G), key=len)
             subgraph = G.subgraph(largest_cc)
             return nx.average_shortest_path_length(subgraph)
-
 
     def create_network(self):
         if self.config.network_type == 'watts-strogatz':
@@ -226,12 +230,13 @@ class NetworkModel(Model):
         self.steps += 1
         for agent in self.schedule.agents:
             agent.reset()
-        self.datacollector.collect(self)
+        if self.steps%5==0:
+            self.datacollector.collect(self)
+        # self.datacollector.collect(self)
         self.schedule.step()
 
-
     def run_model(self, steps):
-        for i in range(steps):
+        for _ in range(steps):
             self.step()
 
 
