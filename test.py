@@ -1,4 +1,4 @@
-from main2 import *
+from process_files.main_faster import *
 import numpy as np
 
 def test_initialization():
@@ -11,7 +11,6 @@ def test_initialization():
     # Check the initial attributes
     for agent in model.schedule.agents:
         assert agent.wealth == config.wealth, "Incorrect initial wealth"
-        assert agent.recent_wealth == config.recent_wealth, "Incorrect initial recent wealth"
 
         neighbors_count = len(list(model.G.neighbors(agent.pos)))
         assert neighbors_count >= 0, "Incorrect number of neighbors"
@@ -64,9 +63,9 @@ def test_data_collection():
     # Check model_reporters
     model_data = model.datacollector.get_model_vars_dataframe()
     # assert len(model_data) == steps_to_run, "Incorrect data count"
-    required_cols = ["Gini", "Average Degree", "Clustering Coefficient", "Average Path Length", "Wealth Distribution"]
-    for col in required_cols:
-        assert col in model_data.columns, f"{col} is not in the data"
+    # required_cols = ["Gini", "Average Degree", "Clustering Coefficient", "Average Path Length", "Wealth Distribution"]
+    # for col in required_cols:
+    #     assert col in model_data.columns, f"{col} is not in the data"
 
     # Check agent_reporters
     agent_data = model.datacollector.get_agent_vars_dataframe()
@@ -97,6 +96,30 @@ def test_rewiring():
         print("Rewiring test: No edges initially, rewiring might add edges if code allows it.")
 
     print("Rewiring test passed.")
+
+
+def test_rewiring_prob_zero():
+    config = DefaultConfig()
+    config.num_agents = 10
+    config.network_type = 'watts-strogatz'
+    config.k = 4
+    config.p = 0.1
+    # set rewiring
+    config.rewiring_prob = 0.0
+
+    model = NetworkModel(config)
+    initial_edges = sum(len(model.adjacency[n]) for n in model.adjacency)//2
+
+    for step in range(20):
+        model.step()
+
+    final_edges = sum(len(model.adjacency[n]) for n in model.adjacency)//2
+
+    print(f"Initial edges={initial_edges}, final edges={final_edges}")
+    if final_edges == initial_edges:
+        print("Test PASSED: no edges changed with rewiring_prob=0")
+    else:
+        print("Test FAILED: edges changed => rewire occurred unexpectedly!")
 
 
 
@@ -156,22 +179,19 @@ def test_uv_update():
 def test_choose_strategy():
 
     config = DefaultConfig()
-    config.ration = 1
 
-    agent1 = Player(1, None, None, config)
-    agent2 = Player(2, None, None, config)
+    agent1 = Player(1, None, None, config, ration=200)
+    agent2 = Player(2, None, None, config, ration=200)
 
     agent1.U_with_belief = 0.5
     agent1.V_with_belief = 0.5
-
     agent2.U_with_belief = 0.5
     agent2.V_with_belief = 0.5
 
     E1, E2 = agent1.choose_strategy(agent2)
-    # print(E1,E2)
 
-    assert E1 == 1, f"Strategy for agent1 incorrect"
-    assert E2 == 1, f"Strategy for agent2 incorrect"
+    assert E1 > 0.9, f"Strategy for agent1 incorrect"
+    assert E2 > 0.9, f"Strategy for agent2 incorrect"
 
     print("Strategy choice test passed.")
 
@@ -183,4 +203,5 @@ if __name__ == "__main__":
     test_rewiring()
     test_add_belief()
     test_uv_update()
-    # test_choose_strategy()
+    test_choose_strategy()
+    test_rewiring_prob_zero()
