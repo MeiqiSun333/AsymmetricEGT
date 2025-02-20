@@ -14,7 +14,7 @@ from experiment import *
 
 
 class Player(Agent):
-    def __init__(self, unique_id, model, pos, config, ration=None):
+    def __init__(self, unique_id, model, pos, config, eta=None, ration=None):
         self.unique_id = unique_id
         self.model = model
         self.pos = pos
@@ -22,7 +22,7 @@ class Player(Agent):
         self.V = np.random.uniform(low=config.V_distribution[0], high=config.V_distribution[1])
         self.wealth = config.wealth
         self.recent_wealth = config.recent_wealth
-        self.eta = np.random.normal(loc=config.eta_distribution[0], scale=config.eta_distribution[1])
+        self.eta = eta if eta is not None else np.random.normal(loc=config.eta_distribution[0], scale=config.eta_distribution[1])
         self.ration = ration if ration is not None else np.random.lognormal(mean=config.ration_distribution[0], sigma=config.ration_distribution[1])
         self.V_with_belief = 0
         self.U_with_belief = 0
@@ -42,6 +42,7 @@ class Player(Agent):
         self.beta_con = config.beta_con
         self.epsilon = config.epsilon
 
+
     def choose_neighbor(self):
         neighbors = self.model.adjacency[self.pos]  # set of neighbors
         candidates = []
@@ -50,6 +51,7 @@ class Player(Agent):
             if not ag.has_played:
                 candidates.append(ag)
         return random.choice(candidates) if candidates else None
+
 
     def add_belief(self, other):
         dv = self.alpha_epsilon * (self.V - other.V)
@@ -60,11 +62,13 @@ class Player(Agent):
         p_epsilon_u = np.tanh(du)
         self.U_with_belief = self.U - p_epsilon_u * self.U
 
+
     @staticmethod
     def indicator_function(x, A):
         return 1 if x > A else 0
 
-    def choose_strategy(self, other, p_c1=0.5, p_c2=0.5, max_iter=3, tol=1):
+
+    def choose_strategy(self, other, p_c1=0.5, p_c2=0.5, max_iter=5, tol=0.5):
         for _ in range(max_iter):
             old_c1, old_c2 = p_c1, p_c2
 
@@ -98,18 +102,18 @@ class Player(Agent):
         return E1, E2
 
 
-
     def update_wealth(self, payoff):
         np.roll(self.history, -1)
         self.history[-1] = payoff
         self.wealth = self.wealth * (1.0 + self.model.discount) + payoff
 
-        # force to 0 if negative
+        # force wealth equal to 0 if negative
         if self.wealth < 0:
             self.wealth = 0
 
         discount_factors = (1.0 + self.model.discount) ** np.arange(5)[::-1]
         self.recent_wealth = np.dot(self.history, discount_factors)
+
 
     def update_payoff_mx(self, other):
         z_uv = self.eta * (other.recent_wealth - self.recent_wealth)
@@ -123,6 +127,7 @@ class Player(Agent):
             self.V += dV
             self.U += dU
             return self.V, self.U
+
 
     def rewire_connection(self, other):
         if random.random() < self.rewiring_prob:
@@ -163,6 +168,7 @@ class Player(Agent):
         other = self.choose_neighbor()
         if other:
             self.add_belief(other)
+            other.add_belief(self)
             my_payoff, other_payoff = self.choose_strategy(other)
             self.update_wealth(my_payoff)
             other.update_wealth(other_payoff)
@@ -185,12 +191,12 @@ class NetworkModel(Model):
         self.adjacency = self._build_adjacency_dict(self.G)
 
         self.steps = 0
-        self.all_node_ids_minus_self = {}
-        all_nodes_list = list(self.G.nodes())
-        for node_id in all_nodes_list:
-            tmp = all_nodes_list.copy()
-            tmp.remove(node_id)
-            self.all_node_ids_minus_self[node_id] = tmp
+        # self.all_node_ids_minus_self = {}
+        # all_nodes_list = list(self.G.nodes())
+        # for node_id in all_nodes_list:
+        #     tmp = all_nodes_list.copy()
+        #     tmp.remove(node_id)
+        #     self.all_node_ids_minus_self[node_id] = tmp
 
         self.id_to_agent = {}
 
@@ -235,6 +241,7 @@ class NetworkModel(Model):
             adjacency[v].add(u)
         return adjacency
 
+
     @staticmethod
     def compute_gini(wealths):
         wealths = np.array(wealths, dtype=float)
@@ -262,8 +269,7 @@ class NetworkModel(Model):
         total_edges = 0
         for node, neighbors in model.adjacency.items():
             total_edges += len(neighbors)
-        total_edges /= 2
-        return total_edges / len(model.adjacency) if len(model.adjacency) > 0 else 0
+        return total_edges / len(model.adjacency)
 
 
     def step(self):
@@ -319,7 +325,7 @@ class DefaultConfig:
         self.epsilon = 0.005
 
         # model
-        self.discount = 0.05
+        self.discount = 0.0001
 
         # network
         self.network_type = 'scale-free'
@@ -337,41 +343,34 @@ class DefaultConfig:
 
 def _parallel_run(args):
 
-    network_type, avg_degree, rewiring_prob, num_steps, results_dir = args
-    res = run_experiment(
-        network_type=network_type,
-        num_steps=num_steps,
-        avg_degree=avg_degree,
-        rewiring_prob=rewiring_prob
-    )
-    file_name = f"{network_type}_deg_{avg_degree}_rew_{rewiring_prob}.json"
+    experiment_id, network_type, avg_degree, rewiring_prob, num_steps, results_dir = args
+    if experiment_id == 1:
+        res = run_experiment1(
+            network_type=network_type,
+            num_steps=num_steps,
+            avg_degree=avg_degree,
+            rewiring_prob=rewiring_prob
+        )
+
+    file_name = f"{network_type}_degree_{avg_degree}.json"
     file_path = os.path.join(results_dir, file_name)
     with open(file_path, 'w') as f:
         json.dump(res, f, indent=4)
-    print(f"Saved results for network_type={network_type}, avg_degree={avg_degree}, rewiring_prob={rewiring_prob}")
+    print(f"Saved results for network_type={network_type}, avg_degree={avg_degree}")
     return (network_type, avg_degree, rewiring_prob)
 
 
 def main():
-
-    num_steps = 1000
+    num_steps = 480
 
     # experiment 1
     results_dir1 = "experiment1"
+    experiment_id = 1
     os.makedirs(results_dir1, exist_ok=True)
     tasks1 = []
     for network_type in ['watts-strogatz', 'scale-free', 'regular']:
-        # for avg_degree in [6, 8, 10]:
-        for avg_degree in [8]:
-            tasks1.append((network_type, avg_degree, 0, num_steps, results_dir1))
-
-    # experiment 2
-    # results_dir2 = "experiment2"
-    # os.makedirs(results_dir2, exist_ok=True)
-    # tasks2 = []
-    # for network_type in ['watts-strogatz', 'scale-free', 'regular']:
-    #     for rewiring_prob in [0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1]:
-    #         tasks2.append((network_type, avg_degree, rewiring_prob, num_steps, results_dir2))
+        for avg_degree in [6, 8, 10]:
+            tasks1.append((experiment_id, network_type, avg_degree, 0, num_steps, results_dir1))
 
 
     # tasks = tasks1 + tasks2
