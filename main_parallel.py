@@ -1,4 +1,4 @@
-# main_parallel + experiment, implement parallelization and run in main
+# main file
 
 import random
 import numpy as np
@@ -11,6 +11,7 @@ import os
 import json
 import time
 from experiment import *
+from experiment_stratch import *
 
 
 class Player(Agent):
@@ -22,7 +23,7 @@ class Player(Agent):
         self.V = np.random.uniform(low=config.V_distribution[0], high=config.V_distribution[1])
         self.wealth = config.wealth
         self.recent_wealth = config.recent_wealth
-        self.eta = eta if eta is not None else np.random.normal(loc=config.eta_distribution[0], scale=config.eta_distribution[1])
+        self.eta = eta if eta is not None else np.random.uniform(low=config.eta_distribution[0], high=config.eta_distribution[1])
         self.ration = ration if ration is not None else np.random.lognormal(mean=config.ration_distribution[0], sigma=config.ration_distribution[1])
         self.V_with_belief = 0
         self.U_with_belief = 0
@@ -55,11 +56,11 @@ class Player(Agent):
 
     def add_belief(self, other):
         dv = self.alpha_epsilon * (self.V - other.V)
-        p_epsilon_v = np.tanh(dv)
+        p_epsilon_v = (np.exp(dv) - np.exp(-dv)) / (np.exp(dv) + np.exp(-dv))
         self.V_with_belief = self.V - p_epsilon_v * self.V
 
         du = self.alpha_epsilon * (self.U - other.U)
-        p_epsilon_u = np.tanh(du)
+        p_epsilon_u = (np.exp(du) - np.exp(-du)) / (np.exp(du) + np.exp(-du))
         self.U_with_belief = self.U - p_epsilon_u * self.U
 
 
@@ -116,20 +117,20 @@ class Player(Agent):
 
 
     def update_payoff_mx(self, other):
-        z_uv = self.eta * (other.recent_wealth - self.recent_wealth)
-        p_uv = np.tanh(z_uv)
-        if random.random() < p_uv:
-            indicator = Player.indicator_function(other.wealth, self.wealth)
-            diff_wealth = (other.wealth - self.wealth)
-            denom = (1.0 + np.exp(-self.beta_uv * indicator * diff_wealth))
-            dV = self.alpha_uv * (other.V - self.V) / denom
-            dU = self.alpha_uv * (other.U - self.U) / denom
-            self.V += dV
-            self.U += dU
-            return self.V, self.U
+        indicator = Player.indicator_function(other.wealth, self.wealth)
+        diff_wealth = (other.wealth - self.wealth)
+        denom = np.tanh(self.beta_uv * diff_wealth)
+        dV = self.eta * indicator * (other.V - self.V) * denom
+        dU = self.eta * indicator * (other.U - self.U) * denom
+        self.V += dV
+        self.U += dU
+        return self.V, self.U
 
 
     def rewire_connection(self, other):
+        if self.unique_id > other.unique_id:
+            return
+
         if random.random() < self.rewiring_prob:
             # remove edge
             if other.pos in self.model.adjacency[self.pos]:
@@ -138,16 +139,23 @@ class Player(Agent):
                 self.model.adjacency[other.pos].remove(self.pos)
 
             possible_neighbors = set(self.model.adjacency[other.pos]) - {self.pos}
+
+            # remove nodes that are already the neighbor
+            possible_new_neighbors = [
+                nbr for nbr in possible_neighbors
+                if nbr not in self.model.adjacency[self.pos]
+            ]
+
             rewired = False
-            if possible_neighbors:
-                for new_neighbor_pos in possible_neighbors:
+            if possible_new_neighbors:
+                for new_neighbor_pos in possible_new_neighbors:
                     new_agent = self.model.id_to_agent[new_neighbor_pos]
                     temp_value = self.beta_con * max(abs(self.wealth - new_agent.wealth), self.epsilon)
                     p_con = 0.0
                     if temp_value < 1.0:
                         p_con = 1.0 / (1.0 + (1.0 - temp_value) ** (-self.alpha_con))
+
                     if random.random() < p_con:
-                        # add edge in adjacency
                         self.model.adjacency[self.pos].add(new_neighbor_pos)
                         self.model.adjacency[new_neighbor_pos].add(self.pos)
                         rewired = True
@@ -156,10 +164,8 @@ class Player(Agent):
             if not rewired:
                 self.model.adjacency[self.pos].add(other.pos)
                 self.model.adjacency[other.pos].add(self.pos)
-
         else:
             pass
-
 
     def reset(self):
         self.has_played = False
@@ -191,12 +197,6 @@ class NetworkModel(Model):
         self.adjacency = self._build_adjacency_dict(self.G)
 
         self.steps = 0
-        # self.all_node_ids_minus_self = {}
-        # all_nodes_list = list(self.G.nodes())
-        # for node_id in all_nodes_list:
-        #     tmp = all_nodes_list.copy()
-        #     tmp.remove(node_id)
-        #     self.all_node_ids_minus_self[node_id] = tmp
 
         self.id_to_agent = {}
 
@@ -274,15 +274,16 @@ class NetworkModel(Model):
 
     def step(self):
         self.steps += 1
+
         for agent in self.schedule.agents:
             agent.reset()
+
+        self.schedule.step()
 
         self._sync_to_networkx()
 
         if self.steps % 10 == 0:
             self.datacollector.collect(self)
-
-        self.schedule.step()
 
 
     def _sync_to_networkx(self):
@@ -308,7 +309,7 @@ class DefaultConfig:
         self.V_distribution = (-2, 2)
         self.wealth = 0
         self.recent_wealth = 0
-        self.eta_distribution = (1, 0.5)
+        self.eta_distribution = (0, 1)
         self.ration_distribution = (0, 1)
 
         # parameters for belief
@@ -325,7 +326,7 @@ class DefaultConfig:
         self.epsilon = 0.005
 
         # model
-        self.discount = 0.0001
+        self.discount = 0
 
         # network
         self.network_type = 'scale-free'
@@ -351,31 +352,63 @@ def _parallel_run(args):
             avg_degree=avg_degree,
             rewiring_prob=rewiring_prob
         )
+        file_name = f"{network_type}_degree_{avg_degree}.json"
 
-    file_name = f"{network_type}_degree_{avg_degree}.json"
+    elif experiment_id == 2:
+        res = run_experiment2(num_steps=num_steps, repetitions=10, distinct_samples=16)
+        file_name = "experiment2_sobol.json"
+
+    elif experiment_id == 3:
+        res = run_experiment_extreme_check(
+            network_type=network_type,
+            num_steps=num_steps,
+            avg_degree=avg_degree,
+            rewiring_prob=rewiring_prob
+        )
+        file_name = f"{network_type}_deg_{avg_degree}_rew_{rewiring_prob}.json"
+
+
     file_path = os.path.join(results_dir, file_name)
     with open(file_path, 'w') as f:
         json.dump(res, f, indent=4)
-    print(f"Saved results for network_type={network_type}, avg_degree={avg_degree}")
-    return (network_type, avg_degree, rewiring_prob)
+    print(f"Saved results for experiment {experiment_id}")
 
 
 def main():
     num_steps = 480
 
-    # experiment 1
+    # experiment 1: network structure with no rewiring
     results_dir1 = "experiment1"
     experiment_id = 1
     os.makedirs(results_dir1, exist_ok=True)
     tasks1 = []
     for network_type in ['watts-strogatz', 'scale-free', 'regular']:
-        for avg_degree in [6, 8, 10]:
-            tasks1.append((experiment_id, network_type, avg_degree, 0, num_steps, results_dir1))
+        tasks1.append((experiment_id, network_type, 8, 0, num_steps, results_dir1))
+
+    # experiment 2
+    results_dir2 = "experiment_multi"
+    experiment_id = 2
+    os.makedirs(results_dir2, exist_ok=True)
+    tasks2 = [(experiment_id, '', 0, 0, num_steps, results_dir2)]
+
+
+    # experiment extre: check the params of top rich
+    results_dir3 = "experiment_extre"
+    experiment_id = 3
+    os.makedirs(results_dir3, exist_ok=True)
+    tasks3 = []
+    deg = 8
+    rew = 0
+    for net in ['watts-strogatz', 'scale-free', 'regular']:
+        tasks3.append((experiment_id, net, deg, rew, num_steps, results_dir3))
 
 
     # tasks = tasks1 + tasks2
     with multiprocessing.Pool() as pool:
         pool.map(_parallel_run, tasks1)
+
+    # for task in tasks1:
+    #     _parallel_run(task)
 
 
 if __name__ == "__main__":

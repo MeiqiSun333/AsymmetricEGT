@@ -1,3 +1,5 @@
+# test main functions
+
 from main_parallel import *
 import numpy as np
 
